@@ -1,7 +1,7 @@
 # ===============================================
-#   SWING MODE ENGINE v2.1 — UNIVERSAL STOCK ANALYZER
+#   SWING MODE ENGINE v2.2 — UNIVERSAL STOCK ANALYZER
 #   Supports any NSE/BSE stock (e.g., RELIANCE.NS, TCS.NS, INFY.NS)
-#   Computes EMA, RSI, MACD, Support/Resistance & Breakout Signals
+#   Computes EMA, RSI, MACD, Support/Resistance, Trend & Breakout Signals
 #   Generates professional candlestick chart
 # ===============================================
 
@@ -159,6 +159,15 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             return None
         return round(float(val), 2)
 
+    # --- Trend Classification ---
+    if latest["EMA20"] > latest["EMA50"] > latest["EMA200"]:
+        trend = "Bullish"
+    elif latest["EMA20"] < latest["EMA50"] < latest["EMA200"]:
+        trend = "Bearish"
+    else:
+        trend = "Sideways"
+
+    # --- Final JSON Result ---
     result = {
         "symbol": symbol,
         "date": str(latest.name.date()),
@@ -174,11 +183,11 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         "resistances": [safe_float(x) for x in resistances],
         "breakout_signal": signal,
         "breakout": bool(breakout),
+        "trend": trend,  # 👈 Added Trend Classifier
         "chart_base64": chart_b64,
     }
 
     return result
-
 
 # =============================
 #   FASTAPI APP SETUP
@@ -191,7 +200,7 @@ from pydantic import BaseModel
 class StockInput(BaseModel):
     symbol: str
 
-app = FastAPI(title="Swing Mode Engine v2.1")
+app = FastAPI(title="Swing Mode Engine v2.2")
 
 @app.post("/analyze")
 def analyze_endpoint(payload: StockInput):
@@ -205,13 +214,10 @@ def analyze_endpoint(payload: StockInput):
 @app.get("/")
 def root():
     return {
-        "status": "✅ Swing Mode Engine v2.1 is live",
+        "status": "✅ Swing Mode Engine v2.2 is live",
         "usage": "POST /analyze with JSON { 'symbol': 'TCS.NS' }",
         "example": {
             "url": "https://ta-engine-v927.onrender.com/analyze",
             "body": {"symbol": "RELIANCE.NS"}
         }
     }
-
-
-
