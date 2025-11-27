@@ -86,20 +86,17 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
 
-    # Download safely and flatten MultiIndex columns if present
     df = yf.download(symbol, start=start, end=end, auto_adjust=False)
 
     if df.empty:
         raise ValueError(f"No data available for {symbol}")
 
-    # ✅ If Yahoo returns MultiIndex (e.g., ('Open', ''), ('Close', '')), flatten it
+    # ✅ Flatten MultiIndex if present
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [col[0] for col in df.columns]
 
-    # ✅ Normalize column names safely
     df.columns = [str(c).title().strip() for c in df.columns]
 
-    # ✅ Handle case where only 'Adj Close' exists
     if "Close" not in df.columns and "Adj Close" in df.columns:
         df["Close"] = df["Adj Close"]
 
@@ -108,11 +105,10 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     if missing:
         raise ValueError(f"Missing columns from Yahoo data: {missing}")
 
-    # ✅ Convert to numeric safely
     df[required_cols] = df[required_cols].apply(pd.to_numeric, errors="coerce")
     df = df.dropna(subset=required_cols)
 
-    # --- Indicators ---
+    # --- Compute Indicators ---
     df["EMA20"] = compute_ema(df["Close"], 20)
     df["EMA50"] = compute_ema(df["Close"], 50)
     df["EMA200"] = compute_ema(df["Close"], 200)
@@ -120,19 +116,23 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     macd_line, signal_line, hist = compute_macd(df["Close"])
     df["MACD"], df["Signal"], df["Hist"] = macd_line, signal_line, hist
 
-    # --- Support / Resistance ---
+    # ✅ Drop all rows with any NaN after indicators
+    df = df.dropna()
+
+    # --- Detect Support/Resistance & Breakout ---
     supports, resistances = detect_support_resistance(df)
     breakout, signal = detect_breakout(df)
 
-    # --- Chart Generation ---
+    # --- Chart Generation (safe) ---
     try:
+        df_plot = df.tail(150).copy()
         apds = [
-            mpf.make_addplot(df["EMA20"], color="orange", width=0.8),
-            mpf.make_addplot(df["EMA50"], color="blue", width=0.8),
-            mpf.make_addplot(df["EMA200"], color="green", width=0.8),
+            mpf.make_addplot(df_plot["EMA20"], color="orange", width=0.8),
+            mpf.make_addplot(df_plot["EMA50"], color="blue", width=0.8),
+            mpf.make_addplot(df_plot["EMA200"], color="green", width=0.8),
         ]
         fig, _ = mpf.plot(
-            df.tail(150),
+            df_plot,
             type="candle",
             style="yahoo",
             title=f"{symbol} — Swing Chart ({datetime.now():%d-%b-%Y})",
@@ -150,25 +150,33 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         print(f"Chart generation failed: {e}")
         chart_b64 = None
 
-    # --- Final Result ---
+    # --- Final Snapshot ---
     latest = df.iloc[-1]
+
+    # ✅ Convert NaN → None for JSON safety
+    def safe_float(val):
+        if pd.isna(val) or np.isinf(val):
+            return None
+        return round(float(val), 2)
+
     result = {
         "symbol": symbol,
         "date": str(latest.name.date()),
-        "latest_close": round(float(latest["Close"]), 2),
-        "ema20": round(float(latest["EMA20"]), 2),
-        "ema50": round(float(latest["EMA50"]), 2),
-        "ema200": round(float(latest["EMA200"]), 2),
-        "rsi": round(float(latest["RSI"]), 2),
-        "macd": round(float(latest["MACD"]), 2),
-        "macd_signal": round(float(latest["Signal"]), 2),
-        "macd_hist": round(float(latest["Hist"]), 2),
-        "supports": supports,
-        "resistances": resistances,
+        "latest_close": safe_float(latest["Close"]),
+        "ema20": safe_float(latest["EMA20"]),
+        "ema50": safe_float(latest["EMA50"]),
+        "ema200": safe_float(latest["EMA200"]),
+        "rsi": safe_float(latest["RSI"]),
+        "macd": safe_float(latest["MACD"]),
+        "macd_signal": safe_float(latest["Signal"]),
+        "macd_hist": safe_float(latest["Hist"]),
+        "supports": [safe_float(x) for x in supports],
+        "resistances": [safe_float(x) for x in resistances],
         "breakout_signal": signal,
-        "breakout": breakout,
-        "chart_base64": chart_b64
+        "breakout": bool(breakout),
+        "chart_base64": chart_b64,
     }
+
     return result
 
 
@@ -204,5 +212,6 @@ def root():
             "body": {"symbol": "RELIANCE.NS"}
         }
     }
+
 
 
