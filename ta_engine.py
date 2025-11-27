@@ -59,28 +59,30 @@ def detect_support_resistance(df, window=10):
 # --- Breakout Detection Logic ---
 
 def detect_breakout(df):
-    ema20, ema50, ema200 = df["EMA20"].iloc[-1], df["EMA50"].iloc[-1], df["EMA200"].iloc[-1]
-    rsi, macd, macd_signal = df["RSI"].iloc[-1], df["MACD"].iloc[-1], df["Signal"].iloc[-1]
-    close = df["Close"].iloc[-1]
+    # Ensure scalar values
+    ema20 = float(df["EMA20"].iloc[-1])
+    ema50 = float(df["EMA50"].iloc[-1])
+    ema200 = float(df["EMA200"].iloc[-1])
+    rsi = float(df["RSI"].iloc[-1])
+    macd = float(df["MACD"].iloc[-1])
+    macd_signal = float(df["Signal"].iloc[-1])
+    close = float(df["Close"].iloc[-1])
+
     breakout = False
     signal = None
 
-    # EMA Alignment Check
-    ema_aligned = ema20 > ema50 > ema200
-
-    # MACD Crossover
+    # Safe comparisons
+    ema_aligned = (ema20 > ema50) and (ema50 > ema200)
     macd_cross = macd > macd_signal
-
-    # RSI Confirmation
     rsi_ok = 50 <= rsi <= 65
 
     if ema_aligned and macd_cross and rsi_ok and close > ema20:
         breakout = True
-        signal = "Bullish breakout confirmed"
+        signal = "✅ Bullish breakout confirmed"
     elif close < ema200:
-        signal = "Bearish structure"
+        signal = "⚠️ Bearish structure"
     else:
-        signal = "No strong signal yet"
+        signal = "⏸ No strong signal yet"
 
     return breakout, signal
 
@@ -154,6 +156,8 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     }
 
     return result
+
+
 # =============================
 #   FASTAPI APP SETUP
 # =============================
@@ -176,3 +180,18 @@ def analyze_endpoint(payload: StockInput):
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
+
+# =============================
+#   ROOT HEALTH ENDPOINT
+# =============================
+
+@app.get("/")
+def root():
+    return {
+        "status": "✅ Swing Mode Engine v2 is live",
+        "usage": "Send POST request to /analyze with JSON body { 'symbol': 'TCS.NS' }",
+        "example": {
+            "url": "https://ta-engine-v927.onrender.com/analyze",
+            "body": {"symbol": "RELIANCE.NS"}
+        }
+    }
