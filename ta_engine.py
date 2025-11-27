@@ -1,7 +1,6 @@
 # ===============================================
-#   SWING MODE ENGINE v3.0 — UNIVERSAL STOCK ANALYZER (STABLE)
-#   Handles all NSE/BSE stocks robustly
-#   Adds dynamic lookback, JSON-safe output, and chart-safe plotting
+#   SWING MODE ENGINE v3.1 — UNIVERSAL STOCK ANALYZER (STABLE)
+#   Auto-recovers missing data, dynamic lookback, safe indicators
 # ===============================================
 
 import warnings
@@ -96,6 +95,13 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         if df.empty:
             raise ValueError("No data received from Yahoo Finance.")
 
+        # Auto-extend lookback if insufficient data
+        if len(df) < 250:
+            extra_days = 365 if lookback_days < 730 else 0
+            new_start = start - timedelta(days=extra_days)
+            print(f"[INFO] Extending lookback automatically → {extra_days} days")
+            df = yf.download(symbol, start=new_start, end=end, auto_adjust=False)
+
         # Flatten multi-index if present
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] for col in df.columns]
@@ -107,25 +113,24 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             df["Close"] = df["Adj Close"]
 
         required_cols = ["Open", "High", "Low", "Close"]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"Missing columns: {missing}")
-
-        # Convert numeric safely
         df[required_cols] = df[required_cols].apply(pd.to_numeric, errors="coerce")
         df = df.dropna(subset=required_cols)
+        df = df[df["Close"] > 0]
 
-        # Compute indicators
-        df["EMA20"] = compute_ema(df["Close"], 20)
-        df["EMA50"] = compute_ema(df["Close"], 50)
-        df["EMA200"] = compute_ema(df["Close"], 200)
+        if len(df) < 100:
+            raise ValueError("Insufficient clean OHLC data even after fallback fetch.")
+
+        # Compute indicators safely
+        df["EMA20"] = compute_ema(df["Close"], min(20, max(5, len(df)//5)))
+        df["EMA50"] = compute_ema(df["Close"], min(50, max(10, len(df)//3)))
+        df["EMA200"] = compute_ema(df["Close"], min(200, max(20, len(df)//2)))
         df["RSI"] = compute_rsi(df["Close"], 14)
         macd_line, signal_line, hist = compute_macd(df["Close"])
         df["MACD"], df["Signal"], df["Hist"] = macd_line, signal_line, hist
 
         df = df.dropna()
         if df.empty or len(df) < 30:
-            raise ValueError("Not enough valid data after cleaning.")
+            raise ValueError(f"Data too sparse after cleaning. Received only {len(df)} valid rows.")
 
         # Compute supports, resistances, breakout
         supports, resistances = detect_support_resistance(df)
@@ -197,7 +202,11 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         return result
 
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "status": "failed",
+            "error": str(e),
+            "suggestion": "Try increasing lookback_days to 730 or 1095, or ensure symbol is valid (e.g., RELIANCE.NS)."
+        }
 
 # ------------------------------------------------
 #   FASTAPI APP SETUP
@@ -209,20 +218,20 @@ from pydantic import BaseModel
 
 class StockInput(BaseModel):
     symbol: str
-    lookback_days: int = 365  # optional param
+    lookback_days: int = 365
 
-app = FastAPI(title="Swing Mode Engine v3.0")
+app = FastAPI(title="Swing Mode Engine v3.1")
 
 @app.post("/analyze")
 def analyze_endpoint(payload: StockInput):
     result = analyze_stock(payload.symbol, payload.lookback_days)
-    status = 200 if "error" not in result else 500
+    status = 200 if "error" not in result else 400
     return JSONResponse(content=result, status_code=status)
 
 @app.get("/")
 def root():
     return {
-        "status": "✅ Swing Mode Engine v3.0 is live",
+        "status": "✅ Swing Mode Engine v3.1 is live",
         "usage": "POST /analyze with JSON { 'symbol': 'RELIANCE.NS', 'lookback_days': 365 }",
         "example": {
             "url": "https://ta-engine-v927.onrender.com/analyze",
