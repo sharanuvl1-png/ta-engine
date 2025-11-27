@@ -1,6 +1,6 @@
 # ===============================================
-#   SWING MODE ENGINE v3.1-F+ — UNIVERSAL STOCK ANALYZER (STABLE)
-#   Adds OHLC repair mode, retry logic, and safe fallback
+#   SWING MODE ENGINE v3.1-F++ — UNIVERSAL STOCK ANALYZER (FINAL STABLE)
+#   Adds automatic Close-column repair, OHLC repair, and robust Yahoo fallback
 # ===============================================
 
 import warnings
@@ -124,19 +124,25 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
                 "trend": "Unknown"
             }
 
+        # --- COLUMN CLEANUP & REPAIR ---
         df.columns = [str(c).title().strip() for c in df.columns]
 
-        # --- SAFE OHLC REPAIR MODE ---
+        # Auto repair missing Close column
+        if "Close" not in df.columns and "Adj Close" in df.columns:
+            print(f"[WARN] Missing Close column for {symbol} — using Adj Close as fallback.")
+            df["Close"] = df["Adj Close"]
+
+        # Repair missing OHLC
         expected_cols = ["Open", "High", "Low", "Close"]
         if "Adj Close" in df.columns and any(c not in df.columns for c in expected_cols):
             print(f"[WARN] Missing OHLC columns for {symbol} — rebuilding from Adj Close.")
-            df["Close"] = df["Adj Close"]
-            df["Open"] = df["Close"]
-            df["High"] = df["Close"]
-            df["Low"] = df["Close"]
+            df["Open"] = df.get("Open", df["Close"])
+            df["High"] = df.get("High", df["Close"])
+            df["Low"] = df.get("Low", df["Close"])
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = df["Close"]
+
         df = df.ffill().bfill()
         df = df[df["Close"] > 0]
         # --------------------------------
@@ -144,6 +150,7 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         if len(df) < 100:
             print(f"[WARN] Only {len(df)} rows after cleaning — limited accuracy.")
 
+        # --- INDICATOR COMPUTATION ---
         df["EMA20"] = compute_ema(df["Close"], min(20, max(5, len(df)//5)))
         df["EMA50"] = compute_ema(df["Close"], min(50, max(10, len(df)//3)))
         df["EMA200"] = compute_ema(df["Close"], min(200, max(20, len(df)//2)))
@@ -165,7 +172,7 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         supports, resistances = detect_support_resistance(df)
         breakout, signal = detect_breakout(df)
 
-        # --- Chart Generation ---
+        # --- CHART GENERATION ---
         chart_b64 = None
         try:
             df_plot = df.tail(150).copy()
@@ -235,7 +242,7 @@ class StockInput(BaseModel):
     symbol: str
     lookback_days: int = 365
 
-app = FastAPI(title="Swing Mode Engine v3.1-F+")
+app = FastAPI(title="Swing Mode Engine v3.1-F++")
 
 @app.post("/analyze")
 def analyze_endpoint(payload: StockInput):
@@ -245,7 +252,7 @@ def analyze_endpoint(payload: StockInput):
 @app.get("/")
 def root():
     return {
-        "status": "✅ Swing Mode Engine v3.1-F+ is live",
+        "status": "✅ Swing Mode Engine v3.1-F++ is live",
         "usage": "POST /analyze with JSON { 'symbol': 'RELIANCE.NS', 'lookback_days': 365 }",
         "example": {
             "url": "https://<your-render-url>/analyze",
