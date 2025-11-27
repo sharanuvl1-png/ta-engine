@@ -154,3 +154,16 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     }
 
     return result
+# =============================
+#   FASTAPI ENDPOINT
+# =============================
+
+app = FastAPI(title="Swing Mode Engine v2")
+
+@app.post("/analyze")
+def analyze_endpoint(symbol: str = "RELIANCE.NS"):
+    try:
+        result = analyze_stock(symbol)
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
