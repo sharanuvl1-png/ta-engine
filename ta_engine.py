@@ -1,6 +1,6 @@
 # ===============================================
-#   SWING MODE ENGINE v3.1-F — UNIVERSAL STOCK ANALYZER (STABLE)
-#   Adds robust Yahoo fallback, retry logic, and safe JSON returns
+#   SWING MODE ENGINE v3.1-F+ — UNIVERSAL STOCK ANALYZER (STABLE)
+#   Adds OHLC repair mode, retry logic, and safe fallback
 # ===============================================
 
 import warnings
@@ -83,11 +83,10 @@ def detect_breakout(df):
         return False, "⏸ No strong signal yet"
 
 # ------------------------------------------------
-#   ROBUST YAHOO DATA FETCHER
+#   ROBUST YAHOO FETCHER WITH RETRY
 # ------------------------------------------------
 
 def fetch_yahoo_data(symbol, start, end):
-    """Fetches Yahoo Finance data with retries and auto-adjust fallback."""
     for attempt in range(3):
         try:
             df = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=True)
@@ -108,99 +107,76 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         end = datetime.now()
         start = end - timedelta(days=lookback_days)
 
-        # Robust data fetch with fallback
         df = fetch_yahoo_data(symbol, start, end)
-
         if df.empty:
-            print(f"[WARN] Primary fetch failed. Extending lookback to 5 years for {symbol}.")
+            print(f"[WARN] Primary fetch failed — extending to 5 years for {symbol}")
             start = end - timedelta(days=1825)
             df = fetch_yahoo_data(symbol, start, end)
 
         if df.empty:
-            print(f"[ERROR] No valid Yahoo Finance data for {symbol}.")
+            print(f"[ERROR] No valid data returned for {symbol}")
             return {
                 "symbol": symbol,
                 "status": "warning",
                 "message": f"No valid Yahoo Finance data returned for {symbol}.",
                 "latest_close": None,
-                "ema20": None,
-                "ema50": None,
-                "ema200": None,
-                "rsi": None,
-                "macd": None,
-                "macd_signal": None,
-                "macd_hist": None,
-                "supports": [],
-                "resistances": [],
                 "breakout_signal": "⚠️ No valid data",
-                "breakout": False,
-                "trend": "Unknown",
-                "chart_base64": None
+                "trend": "Unknown"
             }
 
-        # Clean dataframe
         df.columns = [str(c).title().strip() for c in df.columns]
-        if "Close" not in df.columns and "Adj Close" in df.columns:
+
+        # --- SAFE OHLC REPAIR MODE ---
+        expected_cols = ["Open", "High", "Low", "Close"]
+        if "Adj Close" in df.columns and any(c not in df.columns for c in expected_cols):
+            print(f"[WARN] Missing OHLC columns for {symbol} — rebuilding from Adj Close.")
             df["Close"] = df["Adj Close"]
-        df = df.dropna(subset=["Open", "High", "Low", "Close"])
+            df["Open"] = df["Close"]
+            df["High"] = df["Close"]
+            df["Low"] = df["Close"]
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = df["Close"]
+        df = df.ffill().bfill()
         df = df[df["Close"] > 0]
+        # --------------------------------
 
         if len(df) < 100:
-            print(f"[WARN] Only {len(df)} rows after cleaning — limited data accuracy.")
+            print(f"[WARN] Only {len(df)} rows after cleaning — limited accuracy.")
 
-        # Compute indicators
         df["EMA20"] = compute_ema(df["Close"], min(20, max(5, len(df)//5)))
         df["EMA50"] = compute_ema(df["Close"], min(50, max(10, len(df)//3)))
         df["EMA200"] = compute_ema(df["Close"], min(200, max(20, len(df)//2)))
         df["RSI"] = compute_rsi(df["Close"], 14)
         macd_line, signal_line, hist = compute_macd(df["Close"])
         df["MACD"], df["Signal"], df["Hist"] = macd_line, signal_line, hist
-
         df = df.dropna()
+
         if df.empty or len(df) < 30:
-            print(f"[WARN] Sparse data ({len(df)} rows) — returning fallback response.")
+            print(f"[WARN] Sparse data ({len(df)} rows) — fallback active.")
             return {
                 "symbol": symbol,
                 "status": "warning",
                 "message": "Data too sparse after cleaning — fallback mode.",
-                "latest_close": None,
-                "ema20": None,
-                "ema50": None,
-                "ema200": None,
-                "rsi": None,
-                "macd": None,
-                "macd_signal": None,
-                "macd_hist": None,
-                "supports": [],
-                "resistances": [],
                 "breakout_signal": "⚠️ No valid data",
-                "breakout": False,
-                "trend": "Unknown",
-                "chart_base64": None
+                "trend": "Unknown"
             }
 
         supports, resistances = detect_support_resistance(df)
         breakout, signal = detect_breakout(df)
 
-        # Chart generation
+        # --- Chart Generation ---
         chart_b64 = None
         try:
             df_plot = df.tail(150).copy()
             apds = [
-                mpf.make_addplot(df_plot["EMA20"], color="orange", width=0.8),
-                mpf.make_addplot(df_plot["EMA50"], color="blue", width=0.8),
-                mpf.make_addplot(df_plot["EMA200"], color="green", width=0.8),
+                mpf.make_addplot(df_plot["EMA20"], color="orange"),
+                mpf.make_addplot(df_plot["EMA50"], color="blue"),
+                mpf.make_addplot(df_plot["EMA200"], color="green"),
             ]
-            fig, _ = mpf.plot(
-                df_plot,
-                type="candle",
-                style="yahoo",
-                title=f"{symbol} — Swing Chart ({datetime.now():%d-%b-%Y})",
-                addplot=apds,
-                volume=True,
-                returnfig=True,
-                figsize=(10, 7)
-            )
+            fig, _ = mpf.plot(df_plot, type="candle", style="yahoo",
+                              title=f"{symbol} — Swing Chart ({datetime.now():%d-%b-%Y})",
+                              addplot=apds, volume=True, returnfig=True, figsize=(10, 7))
             buf = io.BytesIO()
             fig.savefig(buf, format="png", bbox_inches="tight")
             buf.seek(0)
@@ -208,6 +184,7 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             plt.close(fig)
         except Exception as e:
             print(f"[WARN] Chart generation failed: {e}")
+        # -----------------------------
 
         def safe_float(val):
             if pd.isna(val) or np.isinf(val):
@@ -215,12 +192,9 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             return round(float(val), 2)
 
         latest = df.iloc[-1]
-        if latest["EMA20"] > latest["EMA50"] > latest["EMA200"]:
-            trend = "Bullish"
-        elif latest["EMA20"] < latest["EMA50"] < latest["EMA200"]:
-            trend = "Bearish"
-        else:
-            trend = "Sideways"
+        trend = ("Bullish" if latest["EMA20"] > latest["EMA50"] > latest["EMA200"]
+                 else "Bearish" if latest["EMA20"] < latest["EMA50"] < latest["EMA200"]
+                 else "Sideways")
 
         return {
             "symbol": symbol,
@@ -250,7 +224,7 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         }
 
 # ------------------------------------------------
-#   FASTAPI APP SETUP
+#   FASTAPI APP
 # ------------------------------------------------
 
 from fastapi import FastAPI
@@ -261,7 +235,7 @@ class StockInput(BaseModel):
     symbol: str
     lookback_days: int = 365
 
-app = FastAPI(title="Swing Mode Engine v3.1-F")
+app = FastAPI(title="Swing Mode Engine v3.1-F+")
 
 @app.post("/analyze")
 def analyze_endpoint(payload: StockInput):
@@ -271,7 +245,7 @@ def analyze_endpoint(payload: StockInput):
 @app.get("/")
 def root():
     return {
-        "status": "✅ Swing Mode Engine v3.1-F is live",
+        "status": "✅ Swing Mode Engine v3.1-F+ is live",
         "usage": "POST /analyze with JSON { 'symbol': 'RELIANCE.NS', 'lookback_days': 365 }",
         "example": {
             "url": "https://<your-render-url>/analyze",
