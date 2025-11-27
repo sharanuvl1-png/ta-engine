@@ -1,9 +1,12 @@
 # ===============================================
-#   SWING MODE ENGINE v2 — UNIVERSAL STOCK ANALYZER
+#   SWING MODE ENGINE v2.1 — UNIVERSAL STOCK ANALYZER
 #   Supports any NSE/BSE stock (e.g., RELIANCE.NS, TCS.NS, INFY.NS)
 #   Computes EMA, RSI, MACD, Support/Resistance & Breakout Signals
 #   Generates professional candlestick chart
 # ===============================================
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import pandas as pd
 import numpy as np
@@ -14,22 +17,23 @@ import yfinance as yf
 import io
 import base64
 
-
 # --- Core Technical Indicator Functions ---
 
 def compute_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 def compute_rsi(series, period=14):
-    delta = series.diff().to_numpy()
+    """Safe RSI calculation (handles NaN gracefully)."""
+    delta = series.diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
-    gain = np.squeeze(gain)
-    loss = np.squeeze(loss)
-    gain_avg = pd.Series(gain).rolling(period).mean()
-    loss_avg = pd.Series(loss).rolling(period).mean()
-    rsi = 100 - (100 / (1 + (gain_avg / loss_avg)))
-    return rsi.fillna(method="bfill")
+    avg_gain = pd.Series(gain).rolling(window=period).mean()
+    avg_loss = pd.Series(loss).rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    # Replace NaN with neutral 50.0
+    rsi = rsi.fillna(50.0)
+    return rsi
 
 def compute_macd(series, fast=12, slow=26, signal=9):
     ema_fast = compute_ema(series, fast)
@@ -38,7 +42,6 @@ def compute_macd(series, fast=12, slow=26, signal=9):
     signal_line = compute_ema(macd_line, signal)
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
-
 
 # --- Support & Resistance Estimation ---
 
@@ -55,11 +58,9 @@ def detect_support_resistance(df, window=10):
     resistances = sorted(list(set([round(x, 2) for x in resistances])))[:5]
     return supports, resistances
 
-
 # --- Breakout Detection Logic ---
 
 def detect_breakout(df):
-    # Ensure scalar values
     ema20 = float(df["EMA20"].iloc[-1])
     ema50 = float(df["EMA50"].iloc[-1])
     ema200 = float(df["EMA200"].iloc[-1])
@@ -68,42 +69,39 @@ def detect_breakout(df):
     macd_signal = float(df["Signal"].iloc[-1])
     close = float(df["Close"].iloc[-1])
 
-    breakout = False
-    signal = None
-
-    # Safe comparisons
     ema_aligned = (ema20 > ema50) and (ema50 > ema200)
     macd_cross = macd > macd_signal
     rsi_ok = 50 <= rsi <= 65
 
     if ema_aligned and macd_cross and rsi_ok and close > ema20:
-        breakout = True
-        signal = "✅ Bullish breakout confirmed"
+        return True, "✅ Bullish breakout confirmed"
     elif close < ema200:
-        signal = "⚠️ Bearish structure"
+        return False, "⚠️ Bearish structure"
     else:
-        signal = "⏸ No strong signal yet"
-
-    return breakout, signal
-
+        return False, "⏸ No strong signal yet"
 
 # --- Main Analysis Function ---
 
 def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
-    df = yf.download(symbol, start=start, end=end)
+    df = yf.download(symbol, start=start, end=end, auto_adjust=False)
 
     if df.empty:
         raise ValueError(f"No data available for {symbol}")
 
+    # Ensure numeric and drop NaN rows
+    df = df.apply(pd.to_numeric, errors="coerce").dropna(subset=["Open", "High", "Low", "Close"])
+
+    # Compute indicators safely
     df["EMA20"] = compute_ema(df["Close"], 20)
     df["EMA50"] = compute_ema(df["Close"], 50)
     df["EMA200"] = compute_ema(df["Close"], 200)
     df["RSI"] = compute_rsi(df["Close"], 14)
-    df["MACD"], df["Signal"], df["Hist"] = compute_macd(df["Close"])
+    macd_line, signal_line, hist = compute_macd(df["Close"])
+    df["MACD"], df["Signal"], df["Hist"] = macd_line, signal_line, hist
 
-    # --- Detect Support/Resistance & Breakout ---
+    # Detect support/resistance & breakout
     supports, resistances = detect_support_resistance(df)
     breakout, signal = detect_breakout(df)
 
@@ -114,7 +112,6 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             mpf.make_addplot(df["EMA50"], color="blue", width=0.8),
             mpf.make_addplot(df["EMA200"], color="green", width=0.8),
         ]
-
         fig, _ = mpf.plot(
             df.tail(150),
             type="candle",
@@ -125,7 +122,6 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             returnfig=True,
             figsize=(10, 7)
         )
-
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight")
         buf.seek(0)
@@ -135,28 +131,26 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         print(f"Chart generation failed: {e}")
         chart_b64 = None
 
-    # --- Latest Indicator Snapshot ---
+    # Latest indicator snapshot
     latest = df.iloc[-1]
     result = {
         "symbol": symbol,
         "date": str(latest.name.date()),
-        "latest_close": round(latest["Close"], 2),
-        "ema20": round(latest["EMA20"], 2),
-        "ema50": round(latest["EMA50"], 2),
-        "ema200": round(latest["EMA200"], 2),
-        "rsi": round(latest["RSI"], 2),
-        "macd": round(latest["MACD"], 2),
-        "macd_signal": round(latest["Signal"], 2),
-        "macd_hist": round(latest["Hist"], 2),
+        "latest_close": round(float(latest['Close']), 2),
+        "ema20": round(float(latest["EMA20"]), 2),
+        "ema50": round(float(latest["EMA50"]), 2),
+        "ema200": round(float(latest["EMA200"]), 2),
+        "rsi": round(float(latest["RSI"]), 2),
+        "macd": round(float(latest["MACD"]), 2),
+        "macd_signal": round(float(latest["Signal"]), 2),
+        "macd_hist": round(float(latest["Hist"]), 2),
         "supports": supports,
         "resistances": resistances,
         "breakout_signal": signal,
         "breakout": breakout,
         "chart_base64": chart_b64
     }
-
     return result
-
 
 # =============================
 #   FASTAPI APP SETUP
@@ -166,11 +160,10 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# Define input model for JSON payload
 class StockInput(BaseModel):
     symbol: str
 
-app = FastAPI(title="Swing Mode Engine v2")
+app = FastAPI(title="Swing Mode Engine v2.1")
 
 @app.post("/analyze")
 def analyze_endpoint(payload: StockInput):
@@ -178,18 +171,14 @@ def analyze_endpoint(payload: StockInput):
         result = analyze_stock(payload.symbol)
         return JSONResponse(content=result)
     except Exception as e:
+        print(f"[ERROR] {e}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
-
-
-# =============================
-#   ROOT HEALTH ENDPOINT
-# =============================
 
 @app.get("/")
 def root():
     return {
-        "status": "✅ Swing Mode Engine v2 is live",
-        "usage": "Send POST request to /analyze with JSON body { 'symbol': 'TCS.NS' }",
+        "status": "✅ Swing Mode Engine v2.1 is live",
+        "usage": "POST /analyze with JSON { 'symbol': 'TCS.NS' }",
         "example": {
             "url": "https://ta-engine-v927.onrender.com/analyze",
             "body": {"symbol": "RELIANCE.NS"}
