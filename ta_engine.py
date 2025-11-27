@@ -85,15 +85,31 @@ def detect_breakout(df):
 def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
+
+    # ✅ Always ensure consistent column names
     df = yf.download(symbol, start=start, end=end, auto_adjust=False)
 
     if df.empty:
         raise ValueError(f"No data available for {symbol}")
 
-    # Ensure numeric and drop NaN rows
-    df = df.apply(pd.to_numeric, errors="coerce").dropna(subset=["Open", "High", "Low", "Close"])
+    # Normalize column names for safety
+    df.columns = [c.title() for c in df.columns]
 
-    # Compute indicators safely
+    # Handle cases where Yahoo returns 'Adj Close' but not 'Close'
+    if "Close" not in df.columns and "Adj Close" in df.columns:
+        df["Close"] = df["Adj Close"]
+
+    # Ensure required columns exist
+    required_cols = ["Open", "High", "Low", "Close"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns from Yahoo data: {missing}")
+
+    # Convert to numeric safely
+    df[required_cols] = df[required_cols].apply(pd.to_numeric, errors="coerce")
+    df = df.dropna(subset=required_cols)
+
+    # --- Compute indicators ---
     df["EMA20"] = compute_ema(df["Close"], 20)
     df["EMA50"] = compute_ema(df["Close"], 50)
     df["EMA200"] = compute_ema(df["Close"], 200)
@@ -101,11 +117,11 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
     macd_line, signal_line, hist = compute_macd(df["Close"])
     df["MACD"], df["Signal"], df["Hist"] = macd_line, signal_line, hist
 
-    # Detect support/resistance & breakout
+    # --- Detect support/resistance & breakout ---
     supports, resistances = detect_support_resistance(df)
     breakout, signal = detect_breakout(df)
 
-    # --- Candlestick Chart Generation ---
+    # --- Generate chart ---
     try:
         apds = [
             mpf.make_addplot(df["EMA20"], color="orange", width=0.8),
@@ -131,12 +147,12 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         print(f"Chart generation failed: {e}")
         chart_b64 = None
 
-    # Latest indicator snapshot
+    # --- Latest snapshot ---
     latest = df.iloc[-1]
     result = {
         "symbol": symbol,
         "date": str(latest.name.date()),
-        "latest_close": round(float(latest['Close']), 2),
+        "latest_close": round(float(latest["Close"]), 2),
         "ema20": round(float(latest["EMA20"]), 2),
         "ema50": round(float(latest["EMA50"]), 2),
         "ema200": round(float(latest["EMA200"]), 2),
@@ -150,7 +166,9 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         "breakout": breakout,
         "chart_base64": chart_b64
     }
+
     return result
+
 
 # =============================
 #   FASTAPI APP SETUP
@@ -184,3 +202,4 @@ def root():
             "body": {"symbol": "RELIANCE.NS"}
         }
     }
+
