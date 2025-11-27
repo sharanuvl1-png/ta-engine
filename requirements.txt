@@ -4,5 +4,6 @@ yfinance
 pandas
 numpy
 mplfinance
+matplotlib
 pillow
 python-multipart
