@@ -1,0 +1,71 @@
+openapi: 3.1.0
+info:
+  title: TA Engine API
+  description: API for generating technical analysis values and candlestick charts with EMA, RSI, MACD.
+  version: 1.0.0
+
+servers:
+  - url: https://ta-engine-v927.onrender.com
+
+paths:
+  /analyze:
+    post:
+      summary: Generate technical analysis for a stock symbol
+      operationId: analyzeStock
+      description: |
+        Returns EMA20/50/200, RSI, MACD and a candlestick chart (base64 PNG)
+        for the given stock symbol.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - symbol
+              properties:
+                symbol:
+                  type: string
+                  description: Stock symbol like RELIANCE.NS or TCS.NS
+                interval:
+                  type: string
+                  enum: ["1d", "1wk", "1m"]
+                  default: "1d"
+                  description: Time interval of OHLC candles
+                lookback:
+                  type: integer
+                  default: 365
+                  description: Number of days of historical data to fetch
+      responses:
+        '200':
+          description: Successful response with technical indicators and chart image
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbol:
+                    type: string
+                  latest_close:
+                    type: number
+                  ema20:
+                    type: number
+                  ema50:
+                    type: number
+                  ema200:
+                    type: number
+                  rsi:
+                    type: number
+                  macd:
+                    type: number
+                  macd_signal:
+                    type: number
+                  macd_hist:
+                    type: number
+                  chart_image_base64:
+                    type: string
+                    description: Base64 encoded PNG chart image
+        '400':
+          description: Invalid stock symbol or data unavailable
+        '500':
+          description: Server error
