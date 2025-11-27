@@ -1,6 +1,6 @@
 # ===============================================
-#   SWING MODE ENGINE v3.1 — UNIVERSAL STOCK ANALYZER (STABLE)
-#   Auto-recovers missing data, dynamic lookback, safe indicators
+#   SWING MODE ENGINE v3.1-F — UNIVERSAL STOCK ANALYZER (STABLE)
+#   Adds robust Yahoo fallback, retry logic, and safe JSON returns
 # ===============================================
 
 import warnings
@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import io
 import base64
+import time
 
 # ------------------------------------------------
 #   CORE TECHNICAL INDICATOR FUNCTIONS
@@ -23,7 +24,6 @@ def compute_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 def compute_rsi(series, period=14):
-    """Safe RSI calculation (handles NaN gracefully)."""
     delta = series.diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
@@ -83,6 +83,23 @@ def detect_breakout(df):
         return False, "⏸ No strong signal yet"
 
 # ------------------------------------------------
+#   ROBUST YAHOO DATA FETCHER
+# ------------------------------------------------
+
+def fetch_yahoo_data(symbol, start, end):
+    """Fetches Yahoo Finance data with retries and auto-adjust fallback."""
+    for attempt in range(3):
+        try:
+            df = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=True)
+            if not df.empty:
+                return df
+        except Exception as e:
+            print(f"[ERROR] Attempt {attempt+1} failed for {symbol}: {e}")
+        print(f"[WARN] Empty data on attempt {attempt+1} for {symbol}. Retrying...")
+        time.sleep(2)
+    return pd.DataFrame()
+
+# ------------------------------------------------
 #   MAIN ANALYSIS FUNCTION
 # ------------------------------------------------
 
@@ -91,36 +108,47 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         end = datetime.now()
         start = end - timedelta(days=lookback_days)
 
-        df = yf.download(symbol, start=start, end=end, auto_adjust=False)
+        # Robust data fetch with fallback
+        df = fetch_yahoo_data(symbol, start, end)
+
         if df.empty:
-            raise ValueError("No data received from Yahoo Finance.")
+            print(f"[WARN] Primary fetch failed. Extending lookback to 5 years for {symbol}.")
+            start = end - timedelta(days=1825)
+            df = fetch_yahoo_data(symbol, start, end)
 
-        # Auto-extend lookback if insufficient data
-        if len(df) < 250:
-            extra_days = 365 if lookback_days < 730 else 0
-            new_start = start - timedelta(days=extra_days)
-            print(f"[INFO] Extending lookback automatically → {extra_days} days")
-            df = yf.download(symbol, start=new_start, end=end, auto_adjust=False)
+        if df.empty:
+            print(f"[ERROR] No valid Yahoo Finance data for {symbol}.")
+            return {
+                "symbol": symbol,
+                "status": "warning",
+                "message": f"No valid Yahoo Finance data returned for {symbol}.",
+                "latest_close": None,
+                "ema20": None,
+                "ema50": None,
+                "ema200": None,
+                "rsi": None,
+                "macd": None,
+                "macd_signal": None,
+                "macd_hist": None,
+                "supports": [],
+                "resistances": [],
+                "breakout_signal": "⚠️ No valid data",
+                "breakout": False,
+                "trend": "Unknown",
+                "chart_base64": None
+            }
 
-        # Flatten multi-index if present
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [col[0] for col in df.columns]
-
+        # Clean dataframe
         df.columns = [str(c).title().strip() for c in df.columns]
-
-        # Fallback for Adj Close
         if "Close" not in df.columns and "Adj Close" in df.columns:
             df["Close"] = df["Adj Close"]
-
-        required_cols = ["Open", "High", "Low", "Close"]
-        df[required_cols] = df[required_cols].apply(pd.to_numeric, errors="coerce")
-        df = df.dropna(subset=required_cols)
+        df = df.dropna(subset=["Open", "High", "Low", "Close"])
         df = df[df["Close"] > 0]
 
         if len(df) < 100:
-            raise ValueError("Insufficient clean OHLC data even after fallback fetch.")
+            print(f"[WARN] Only {len(df)} rows after cleaning — limited data accuracy.")
 
-        # Compute indicators safely
+        # Compute indicators
         df["EMA20"] = compute_ema(df["Close"], min(20, max(5, len(df)//5)))
         df["EMA50"] = compute_ema(df["Close"], min(50, max(10, len(df)//3)))
         df["EMA200"] = compute_ema(df["Close"], min(200, max(20, len(df)//2)))
@@ -130,9 +158,27 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
 
         df = df.dropna()
         if df.empty or len(df) < 30:
-            raise ValueError(f"Data too sparse after cleaning. Received only {len(df)} valid rows.")
+            print(f"[WARN] Sparse data ({len(df)} rows) — returning fallback response.")
+            return {
+                "symbol": symbol,
+                "status": "warning",
+                "message": "Data too sparse after cleaning — fallback mode.",
+                "latest_close": None,
+                "ema20": None,
+                "ema50": None,
+                "ema200": None,
+                "rsi": None,
+                "macd": None,
+                "macd_signal": None,
+                "macd_hist": None,
+                "supports": [],
+                "resistances": [],
+                "breakout_signal": "⚠️ No valid data",
+                "breakout": False,
+                "trend": "Unknown",
+                "chart_base64": None
+            }
 
-        # Compute supports, resistances, breakout
         supports, resistances = detect_support_resistance(df)
         breakout, signal = detect_breakout(df)
 
@@ -161,17 +207,14 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             chart_b64 = base64.b64encode(buf.read()).decode("utf-8")
             plt.close(fig)
         except Exception as e:
-            print(f"Chart generation failed: {e}")
+            print(f"[WARN] Chart generation failed: {e}")
 
-        # Safe float conversion
         def safe_float(val):
             if pd.isna(val) or np.isinf(val):
                 return None
             return round(float(val), 2)
 
         latest = df.iloc[-1]
-
-        # Trend classification
         if latest["EMA20"] > latest["EMA50"] > latest["EMA200"]:
             trend = "Bullish"
         elif latest["EMA20"] < latest["EMA50"] < latest["EMA200"]:
@@ -179,9 +222,9 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
         else:
             trend = "Sideways"
 
-        # Final JSON result
-        result = {
+        return {
             "symbol": symbol,
+            "status": "ok",
             "date": str(latest.name.date()),
             "latest_close": safe_float(latest["Close"]),
             "ema20": safe_float(latest["EMA20"]),
@@ -196,16 +239,14 @@ def analyze_stock(symbol="RELIANCE.NS", lookback_days=365):
             "breakout_signal": signal,
             "breakout": bool(breakout),
             "trend": trend,
-            "chart_base64": chart_b64,
+            "chart_base64": chart_b64
         }
-
-        return result
 
     except Exception as e:
         return {
-            "status": "failed",
+            "status": "warning",
             "error": str(e),
-            "suggestion": "Try increasing lookback_days to 730 or 1095, or ensure symbol is valid (e.g., RELIANCE.NS)."
+            "message": "Unexpected runtime issue — fallback mode active."
         }
 
 # ------------------------------------------------
@@ -220,21 +261,20 @@ class StockInput(BaseModel):
     symbol: str
     lookback_days: int = 365
 
-app = FastAPI(title="Swing Mode Engine v3.1")
+app = FastAPI(title="Swing Mode Engine v3.1-F")
 
 @app.post("/analyze")
 def analyze_endpoint(payload: StockInput):
     result = analyze_stock(payload.symbol, payload.lookback_days)
-    status = 200 if "error" not in result else 400
-    return JSONResponse(content=result, status_code=status)
+    return JSONResponse(content=result, status_code=200)
 
 @app.get("/")
 def root():
     return {
-        "status": "✅ Swing Mode Engine v3.1 is live",
+        "status": "✅ Swing Mode Engine v3.1-F is live",
         "usage": "POST /analyze with JSON { 'symbol': 'RELIANCE.NS', 'lookback_days': 365 }",
         "example": {
-            "url": "https://ta-engine-v927.onrender.com/analyze",
+            "url": "https://<your-render-url>/analyze",
             "body": {"symbol": "TCS.NS", "lookback_days": 365}
         }
     }
